@@ -343,7 +343,7 @@ def checkout():
 
         order_id = order_res.data[0]['id']
 
-        # 4. Create order items
+        # 4. Create order items and decrement stock
         order_items_data = []
         for item in cart_items:
             order_item = {
@@ -355,6 +355,12 @@ def checkout():
             if item.get("size"):
                 order_item["size"] = item.get("size")
             order_items_data.append(order_item)
+
+            # Decrement stock
+            current_stock = item['products'].get('stock', 0)
+            if current_stock is not None:
+                new_stock = max(0, current_stock - item['quantity'])
+                supabase_admin.table("products").update({"stock": new_stock}).eq("id", item['product_id']).execute()
 
         supabase_admin.table("order_items").insert(order_items_data).execute()
 

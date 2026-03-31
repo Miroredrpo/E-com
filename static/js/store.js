@@ -241,13 +241,16 @@
                     </div>
                     <div class="product-card-body">
                         <div class="product-card-title">${escapeHtml(p.title)}</div>
-                        <div class="product-card-price">Rs. ${parseFloat(p.price).toFixed(2)}</div>
+                        <div class="product-card-price">
+                            Rs. ${parseFloat(p.price).toFixed(2)}
+                            ${p.stock !== null && p.stock <= 0 ? '<span style="color:var(--error);font-size:0.8rem;margin-left:8px;font-weight:600;">(Out of Stock)</span>' : ''}
+                        </div>
                     </div>
                 </a>
                 <div class="product-card-body" style="padding-top:0;">
-                    <button class="btn btn-primary" onclick="event.stopPropagation();addToCart('${p.id}')">
-                        Add to Cart
-                    </button>
+                    <a href="/product/${p.id}" class="btn btn-primary" style="display: block; text-align: center; text-decoration: none;">
+                        View Product
+                    </a>
                 </div>
             `;
             container.appendChild(card);

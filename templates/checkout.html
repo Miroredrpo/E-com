@@ -22,7 +22,7 @@
         }
     }
     .checkout-section {
-        background: #fff;
+        background: var(--bg-primary);
         padding: 2rem;
         border-radius: 8px;
         box-shadow: 0 4px 6px rgba(0,0,0,0.05);
@@ -37,7 +37,7 @@
         justify-content: space-between;
         margin-bottom: 1rem;
         padding-bottom: 1rem;
-        border-bottom: 1px solid #eee;
+        border-bottom: 1px solid var(--border);
     }
     .order-summary-item img {
         width: 50px;
@@ -64,7 +64,7 @@
     .discount-row {
         display: flex;
         justify-content: space-between;
-        color: #2e7d32;
+        color: var(--success);
         margin-top: 0.5rem;
     }
     .coupon-section {
@@ -75,19 +75,19 @@
     .coupon-section input {
         flex: 1;
         padding: 0.75rem;
-        border: 1px solid #ddd;
+        border: 1px solid var(--border);
         border-radius: 4px;
     }
     .coupon-message {
         margin-top: 0.5rem;
         font-size: 0.9rem;
     }
-    .success { color: #2e7d32; }
-    .error { color: #d32f2f; }
+    .success { color: var(--success); }
+    .error { color: var(--error); }
     #shipping-address {
         width: 100%;
         padding: 0.75rem;
-        border: 1px solid #ddd;
+        border: 1px solid var(--border);
         border-radius: 4px;
         margin-bottom: 1rem;
     }
@@ -199,8 +199,8 @@
                     <img src="${prod.image_url || '/static/placeholder.png'}" alt="${prod.title}" onerror="this.src='/static/placeholder.png'">
                     <div class="item-details">
                         <div>${prod.title}</div>
-                        ${item.size ? `<div style="color: #666; font-size: 0.8rem;">Size: ${item.size}</div>` : ''}
-                        <div style="color: #666; font-size: 0.9rem;">Qty: ${item.quantity} x Rs. ${prod.price}</div>
+                        ${item.size ? `<div style="color: var(--text-muted); font-size: 0.8rem;">Size: ${item.size}</div>` : ''}
+                        <div style="color: var(--text-muted); font-size: 0.9rem;">Qty: ${item.quantity} x Rs. ${prod.price}</div>
                     </div>
                 </div>
                 <div class="item-price">Rs. ${lineTotal}</div>
