@@ -1,0 +1,4 @@
+migration.sql
+.env
+.env.example
+/venv

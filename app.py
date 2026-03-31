@@ -1,0 +1,626 @@
+import random
+import string
+from flask import Flask, jsonify, request, render_template, abort
+from supabase import create_client, Client
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+app = Flask(__name__)
+app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 86400  # 24 hours
+
+@app.after_request
+def add_cache_headers(response):
+    # Only cache successful GET requests for HTML pages
+    if request.method == 'GET' and response.status_code == 200:
+        if response.content_type.startswith('text/html'):
+            # Cache HTML shells on Edge for 1 hour, browser for 10 mins
+            response.headers['Cache-Control'] = 'public, max-age=600, s-maxage=3600, stale-while-revalidate=86400'
+        elif request.path.startswith('/static/'):
+            # Cache static assets intensely
+            response.headers['Cache-Control'] = 'public, max-age=31536000, immutable'
+    return response
+
+
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-secret')
+
+# Expose Supabase config to Jinja2 templates
+url: str = os.getenv("SUPABASE_URL", "")
+key: str = os.getenv("SUPABASE_KEY", "")
+app.config['SUPABASE_URL'] = url
+app.config['SUPABASE_KEY'] = key
+
+# Initialize Supabase
+service_key: str = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+try:
+    supabase: Client = create_client(url, key)
+    supabase_admin: Client = create_client(url, service_key) if service_key else supabase
+except Exception as e:
+    print(f"Failed to initialize Supabase client: {e}")
+    supabase = None
+    supabase_admin = None
+
+
+# ---------------------
+# Auth Helpers
+# ---------------------
+
+def get_user_from_token(req):
+    """Extracts JWT token from Authorization header and returns user data if valid."""
+    auth_header = req.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        return None
+    token = auth_header.split(" ")[1]
+    try:
+        res = supabase.auth.get_user(token)
+        return res.user
+    except Exception as e:
+        print(f"Auth error: {e}")
+        return None
+
+
+def is_admin(user_id):
+    """Checks if a user has the admin role."""
+    try:
+        response = supabase_admin.table("profiles").select("role").eq("id", user_id).execute()
+        if response.data and len(response.data) > 0:
+            return response.data[0].get("role") == "admin"
+        return False
+    except Exception as e:
+        print(f"Admin check error: {e}")
+        return False
+
+
+# ---------------------
+# Storefront Routes
+# ---------------------
+
+@app.route("/orders")
+def orders_page():
+    return render_template("orders.html")
+
+@app.route("/")
+def index():
+    return render_template("home.html")
+
+@app.route("/login")
+def login_page():
+    return render_template("login.html")
+
+@app.route("/forgot-password")
+def forgot_password_page():
+    return render_template("forgot_password.html")
+
+@app.route("/product/<product_id>")
+def pdp(product_id):
+    """Server-side rendered Product Detail Page for SEO + instant load."""
+    try:
+        response = supabase_admin.table("products").select("*").eq("id", product_id).single().execute()
+        product = response.data
+        if not product:
+            abort(404)
+        return render_template("pdp.html", product=product)
+    except Exception as e:
+        print(f"PDP error: {e}")
+        abort(404)
+
+
+# ---------------------
+# Admin Routes
+# ---------------------
+
+@app.route("/admin")
+def admin():
+    return render_template("admin.html")
+
+
+@app.route("/checkout")
+def checkout_page():
+    return render_template("checkout.html")
+
+
+# ---------------------
+# Public API — Products
+# ---------------------
+
+@app.route("/api/products", methods=["GET"])
+def get_products():
+    try:
+        res = supabase_admin.table("products").select("*").eq("is_active", True).execute()
+        response = jsonify(res.data)
+        # Cache for 1 hour at edge (Vercel), revalidate in background, client cache 5 mins
+        response.headers["Cache-Control"] = "public, max-age=300, s-maxage=3600, stale-while-revalidate=86400"
+        return response, 200
+    except Exception as e:
+        return jsonify({"error": f"An unknown error occurred: {str(e)}"}), 500
+
+
+@app.route("/api/products/<product_id>", methods=["GET"])
+def get_product(product_id):
+    try:
+        res = supabase_admin.table("products").select("*").eq("id", product_id).execute()
+        if not res.data:
+            return jsonify({"error": "Product not found"}), 404
+        response = jsonify(res.data[0])
+        response.headers["Cache-Control"] = "public, max-age=300, s-maxage=3600, stale-while-revalidate=86400"
+        return response, 200
+    except Exception as e:
+        return jsonify({"error": f"An unknown error occurred: {str(e)}"}), 500
+
+
+# ---------------------
+# Protected API — Cart
+# ---------------------
+
+@app.route("/api/cart", methods=["GET"])
+def get_cart():
+    user = get_user_from_token(request)
+    if not user:
+        return jsonify({"error": "Unauthorized"}), 401
+    try:
+        res = supabase_admin.table("cart_items").select("*, products(*)").eq("user_id", user.id).execute()
+        return jsonify(res.data), 200
+    except Exception as e:
+        return jsonify({"error": f"An unknown error occurred: {str(e)}"}), 500
+
+
+@app.route("/api/cart", methods=["POST"])
+def add_to_cart():
+    user = get_user_from_token(request)
+    if not user:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    data = request.json
+    product_id = data.get("product_id")
+    quantity = data.get("quantity", 1)
+    size = data.get("size")
+
+    if not product_id:
+        return jsonify({"error": "Product ID is required"}), 400
+
+    try:
+        # Check product stock
+        prod_res = supabase_admin.table("products").select("stock").eq("id", product_id).execute()
+        if not prod_res.data:
+            return jsonify({"error": "Product not found"}), 404
+        max_stock = prod_res.data[0].get("stock", 0)
+
+        # Check if already exists in cart (matching product and size)
+        query = supabase_admin.table("cart_items").select("*").eq("user_id", user.id).eq("product_id", product_id)
+        # If size is provided, match by size, otherwise filter for null sizes might be complex, simplify for now
+        existing = query.execute()
+        
+        # Manually verify size locally, or just rely on the first match
+        target_item = None
+        for item in existing.data:
+            if item.get("size") == size:
+                target_item = item
+                break
+
+        if target_item:
+            new_qty = target_item['quantity'] + quantity
+            if new_qty > max_stock:
+                return jsonify({"error": f"Only {max_stock} items available"}), 400
+            res = supabase_admin.table("cart_items").update({"quantity": new_qty}).eq("id", target_item['id']).execute()
+            return jsonify(res.data[0]), 200
+        else:
+            if quantity > max_stock:
+                return jsonify({"error": f"Only {max_stock} items available"}), 400
+            payload = {
+                "user_id": user.id,
+                "product_id": product_id,
+                "quantity": quantity
+            }
+            if size:
+                payload["size"] = size
+            
+            res = supabase_admin.table("cart_items").insert(payload).execute()
+            return jsonify(res.data[0]), 201
+
+    except Exception as e:
+        return jsonify({"error": f"An unknown error occurred: {str(e)}"}), 500
+
+
+@app.route("/api/cart/<cart_item_id>", methods=["PATCH"])
+def update_cart_item(cart_item_id):
+    """Update quantity of a cart item."""
+    user = get_user_from_token(request)
+    if not user:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    data = request.json
+    quantity = data.get("quantity")
+
+    if quantity is None or quantity < 1:
+        return jsonify({"error": "Quantity must be at least 1"}), 400
+
+    try:
+        # Check stock by looking up product_id from cart item
+        cart_res = supabase_admin.table("cart_items").select("product_id, products!inner(stock)").eq("id", cart_item_id).execute()
+        
+        if not cart_res.data:
+            return jsonify({"error": "Item not found in cart"}), 404
+            
+        max_stock = cart_res.data[0]['products'].get('stock', 0)
+        
+        if quantity > max_stock:
+            return jsonify({"error": f"Only {max_stock} items available"}), 400
+
+        res = supabase_admin.table("cart_items").update({"quantity": quantity}).eq("id", cart_item_id).eq("user_id", user.id).execute()
+        if not res.data:
+            return jsonify({"error": "Cart item not found"}), 404
+        return jsonify(res.data[0]), 200
+    except Exception as e:
+        return jsonify({"error": f"An unknown error occurred: {str(e)}"}), 500
+
+
+@app.route("/api/cart/<cart_item_id>", methods=["DELETE"])
+def remove_from_cart(cart_item_id):
+    user = get_user_from_token(request)
+    if not user:
+        return jsonify({"error": "Unauthorized"}), 401
+    try:
+        supabase_admin.table("cart_items").delete().eq("id", cart_item_id).eq("user_id", user.id).execute()
+        return jsonify({"message": "Item removed"}), 200
+    except Exception as e:
+        return jsonify({"error": f"An unknown error occurred: {str(e)}"}), 500
+
+
+# ---------------------
+# Protected API — Checkout
+# ---------------------
+
+@app.route("/api/checkout/validate-coupon", methods=["POST"])
+def validate_coupon():
+    data = request.json
+    code = data.get("code")
+
+    if not code:
+        return jsonify({"error": "Coupon code is required"}), 400
+
+    try:
+        res = supabase_admin.table("coupons").select("*").eq("code", code).eq("is_active", True).execute()
+        if not res.data:
+            return jsonify({"error": "Invalid or expired coupon code"}), 404
+        
+        return jsonify(res.data[0]), 200
+    except Exception as e:
+        return jsonify({"error": f"An unknown error occurred: {str(e)}"}), 500
+
+
+@app.route("/api/checkout", methods=["POST"])
+def checkout():
+    user = get_user_from_token(request)
+    if not user:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    data = request.json
+    shipping_address = data.get("shipping_address")
+    coupon_code = data.get("coupon_code")
+
+    if not shipping_address:
+        return jsonify({"error": "Shipping address is required"}), 400
+
+    try:
+        # 1. Get cart items
+        cart_res = supabase_admin.table("cart_items").select("*, products(*)").eq("user_id", user.id).execute()
+        cart_items = cart_res.data
+
+        if not cart_items:
+            return jsonify({"error": "Cart is empty"}), 400
+
+        # 2. Calculate initial total
+        total_amount = sum(item['quantity'] * float(item['products']['price']) for item in cart_items)
+        
+        # 3. Apply discount if valid coupon provided
+        if coupon_code:
+            coupon_res = supabase_admin.table("coupons").select("*").eq("code", coupon_code).eq("is_active", True).execute()
+            if coupon_res.data:
+                discount_percentage = float(coupon_res.data[0]['discount_percentage'])
+                discount_amount = total_amount * (discount_percentage / 100)
+                total_amount -= discount_amount
+
+        # 4. Create order
+        order_number = ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
+        try:
+            order_res = supabase_admin.table("orders").insert({
+                "user_id": user.id,
+                "order_number": order_number,
+                "total_amount": total_amount,
+                "shipping_address": shipping_address,
+                "payment_method": "cash_on_delivery",
+                "status": "pending"
+            }).execute()
+        except Exception as insert_e:
+            if "order_number" in str(insert_e).lower() or "PGRST204" in str(insert_e):
+                return jsonify({"error": "Database schema needs updating. Please run: ALTER TABLE public.orders ADD COLUMN order_number TEXT UNIQUE;"}), 500
+            raise insert_e
+
+
+        order_id = order_res.data[0]['id']
+
+        # 4. Create order items
+        order_items_data = []
+        for item in cart_items:
+            order_item = {
+                "order_id": order_id,
+                "product_id": item['product_id'],
+                "quantity": item['quantity'],
+                "price_at_time": float(item['products']['price'])
+            }
+            if item.get("size"):
+                order_item["size"] = item.get("size")
+            order_items_data.append(order_item)
+
+        supabase_admin.table("order_items").insert(order_items_data).execute()
+
+        # 5. Clear user's cart
+        supabase_admin.table("cart_items").delete().eq("user_id", user.id).execute()
+
+        return jsonify({"message": "Order placed successfully", "order_id": order_id}), 200
+
+    except Exception as e:
+        return jsonify({"error": f"An unknown error occurred: {str(e)}"}), 500
+
+
+
+@app.route("/api/orders", methods=["GET"])
+def get_user_orders():
+    user = get_user_from_token(request)
+    if not user:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    try:
+        res = supabase_admin.table("orders").select("*, order_items(*, products(title, image_url))").eq("user_id", user.id).order('created_at', desc=True).limit(100).execute()
+        return jsonify(res.data), 200
+    except Exception as e:
+        return jsonify({"error": f"An unknown error occurred: {str(e)}"}), 500
+
+@app.route("/api/orders/<order_id>/cancel", methods=["POST"])
+def cancel_user_order(order_id):
+    user = get_user_from_token(request)
+    if not user:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    try:
+        # Check order belongs to user and is pending
+        order_res = supabase_admin.table("orders").select("*").eq("id", order_id).eq("user_id", user.id).execute()
+        if not order_res.data:
+            return jsonify({"error": "Order not found"}), 404
+        
+        order = order_res.data[0]
+        if order['status'] != 'pending':
+            return jsonify({"error": "Can only cancel pending orders"}), 400
+
+        # Update order status
+        supabase_admin.table("orders").update({"status": "cancelled"}).eq("id", order_id).execute()
+
+        # Restore product stock and recalculate sales handled in admin stats directly or by querying non-cancelled orders
+        order_items_res = supabase_admin.table("order_items").select("*").eq("order_id", order_id).execute()
+        for item in order_items_res.data:
+            product_id = item['product_id']
+            qty = item['quantity']
+            # Get current stock
+            prod_res = supabase_admin.table("products").select("stock").eq("id", product_id).execute()
+            if prod_res.data:
+                current_stock = prod_res.data[0]['stock']
+                new_stock = current_stock + qty
+                supabase_admin.table("products").update({"stock": new_stock}).eq("id", product_id).execute()
+
+        return jsonify({"message": "Order cancelled successfully"}), 200
+    except Exception as e:
+        return jsonify({"error": f"An unknown error occurred: {str(e)}"}), 500
+
+
+# ---------------------
+# Admin API — Protected & Role Restricted
+# ---------------------
+
+@app.route("/api/admin/stats", methods=["GET"])
+def admin_stats():
+    """Dashboard statistics: total sales, pending orders, low stock."""
+    user = get_user_from_token(request)
+    if not user or not is_admin(user.id):
+        return jsonify({"error": "Forbidden"}), 403
+
+    try:
+        # Total sales (sum of all orders)
+        orders_res = supabase_admin.table("orders").select("total_amount, status").execute()
+        orders = orders_res.data or []
+
+        total_sales = sum(float(o['total_amount']) for o in orders if o['status'] != 'cancelled')
+        pending_orders = len([o for o in orders if o['status'] == 'pending'])
+        total_orders = len(orders)
+
+        # Low stock products (stock <= 5)
+        low_stock_res = supabase_admin.table("products").select("id").lte("stock", 5).eq("is_active", True).execute()
+        low_stock_count = len(low_stock_res.data) if low_stock_res.data else 0
+
+        # Total products
+        products_res = supabase_admin.table("products").select("id").eq("is_active", True).execute()
+        total_products = len(products_res.data) if products_res.data else 0
+
+        return jsonify({
+            "total_sales": total_sales,
+            "total_orders": total_orders,
+            "pending_orders": pending_orders,
+            "low_stock_count": low_stock_count,
+            "total_products": total_products
+        }), 200
+    except Exception as e:
+        return jsonify({"error": f"An unknown error occurred: {str(e)}"}), 500
+
+
+@app.route("/api/admin/products", methods=["GET"])
+def admin_get_products():
+    """Get ALL products for admin (including inactive)."""
+    user = get_user_from_token(request)
+    if not user or not is_admin(user.id):
+        return jsonify({"error": "Forbidden"}), 403
+    try:
+        res = supabase_admin.table("products").select("*").order("created_at", desc=True).execute()
+        return jsonify(res.data), 200
+    except Exception as e:
+        return jsonify({"error": f"An unknown error occurred: {str(e)}"}), 500
+
+
+@app.route("/api/admin/products", methods=["POST"])
+def admin_create_product():
+    user = get_user_from_token(request)
+    if not user or not is_admin(user.id):
+        return jsonify({"error": "Forbidden. Admin access required."}), 403
+
+    data = request.json
+    try:
+        res = supabase_admin.table("products").insert(data).execute()
+        return jsonify(res.data[0]), 201
+    except Exception as e:
+        error_str = str(e)
+        if "PGRST204" in error_str:
+            return jsonify({"error": "Schema cache is stale or migration not applied. Please run the migration.sql in Supabase, then go to Supabase Dashboard -> Project Settings -> API -> Reload schema cache."}), 500
+        return jsonify({"error": f"An unknown error occurred while creating the product: {error_str}"}), 500
+
+
+@app.route("/api/admin/products/<product_id>", methods=["PUT"])
+def admin_update_product(product_id):
+    user = get_user_from_token(request)
+    if not user or not is_admin(user.id):
+        return jsonify({"error": "Forbidden"}), 403
+
+    data = request.json
+    try:
+        res = supabase_admin.table("products").update(data).eq("id", product_id).execute()
+        return jsonify(res.data[0]), 200
+    except Exception as e:
+        error_str = str(e)
+        if "PGRST204" in error_str:
+            return jsonify({"error": "Schema cache is stale or migration not applied. Please run the migration.sql in Supabase, then go to Supabase Dashboard -> Project Settings -> API -> Reload schema cache."}), 500
+        return jsonify({"error": f"An unknown error occurred: {error_str}"}), 500
+
+
+@app.route("/api/admin/products/<product_id>", methods=["DELETE"])
+def admin_delete_product(product_id):
+    user = get_user_from_token(request)
+    if not user or not is_admin(user.id):
+        return jsonify({"error": "Forbidden"}), 403
+
+    try:
+        supabase_admin.table("products").delete().eq("id", product_id).execute()
+        return jsonify({"message": "Product deleted"}), 200
+    except Exception as e:
+        return jsonify({"error": f"An unknown error occurred: {str(e)}"}), 500
+
+
+@app.route("/api/admin/orders", methods=["GET"])
+def admin_get_orders():
+    user = get_user_from_token(request)
+    if not user or not is_admin(user.id):
+        return jsonify({"error": "Forbidden"}), 403
+
+    try:
+        # Also include user details like phone and address if they exist
+        res = supabase_admin.table("orders").select("*, profiles(full_name)").order('created_at', desc=True).limit(100).execute()
+        return jsonify(res.data), 200
+    except Exception as e:
+        error_str = str(e)
+        if "PGRST200" in error_str:
+            return jsonify({"error": "No orders found, or missing relationship between 'orders' and 'profiles' in the database schema. If deploying, please ensure 'orders.user_id' references 'public.profiles(id)'."}), 500
+        return jsonify({"error": f"An unknown error occurred while loading orders: {error_str}"}), 500
+
+
+@app.route("/api/admin/orders/<order_id>", methods=["PUT"])
+def admin_update_order(order_id):
+    user = get_user_from_token(request)
+    if not user or not is_admin(user.id):
+        return jsonify({"error": "Forbidden"}), 403
+
+    data = request.json
+    status = data.get("status")
+
+    if not status:
+        return jsonify({"error": "Status is required"}), 400
+
+    try:
+        # Fetch current status first
+        old_order_res = supabase_admin.table("orders").select("status").eq("id", order_id).execute()
+        old_order = old_order_res.data[0] if old_order_res.data else None
+
+        res = supabase_admin.table("orders").update({"status": status}).eq("id", order_id).execute()
+        
+        if old_order and old_order['status'] != 'cancelled' and status == 'cancelled':
+            # Restore product stock
+            order_items_res = supabase_admin.table("order_items").select("*").eq("order_id", order_id).execute()
+            for item in order_items_res.data:
+                product_id = item['product_id']
+                qty = item['quantity']
+                prod_res = supabase_admin.table("products").select("stock").eq("id", product_id).execute()
+                if prod_res.data:
+                    current_stock = prod_res.data[0]['stock']
+                    new_stock = current_stock + qty
+                    supabase_admin.table("products").update({"stock": new_stock}).eq("id", product_id).execute()
+
+        return jsonify(res.data[0]), 200
+    except Exception as e:
+        return jsonify({"error": f"An unknown error occurred: {str(e)}"}), 500
+
+
+@app.route("/api/admin/orders/<order_id>/items", methods=["GET"])
+def admin_get_order_items(order_id):
+    """Get line items for a specific order."""
+    user = get_user_from_token(request)
+    if not user or not is_admin(user.id):
+        return jsonify({"error": "Forbidden"}), 403
+
+    try:
+        res = supabase_admin.table("order_items").select("*, products(title, image_url)").eq("order_id", order_id).execute()
+        return jsonify(res.data), 200
+    except Exception as e:
+        return jsonify({"error": f"An unknown error occurred: {str(e)}"}), 500
+
+
+@app.route("/api/admin/coupons", methods=["GET"])
+def admin_get_coupons():
+    user = get_user_from_token(request)
+    if not user or not is_admin(user.id):
+        return jsonify({"error": "Forbidden"}), 403
+
+    try:
+        res = supabase_admin.table("coupons").select("*").order("created_at", desc=True).execute()
+        return jsonify(res.data), 200
+    except Exception as e:
+        return jsonify({"error": f"An unknown error occurred: {str(e)}"}), 500
+
+@app.route("/api/admin/coupons", methods=["POST"])
+def admin_create_coupon():
+    user = get_user_from_token(request)
+    if not user or not is_admin(user.id):
+        return jsonify({"error": "Forbidden"}), 403
+
+    data = request.json
+    try:
+        res = supabase_admin.table("coupons").insert(data).execute()
+        return jsonify(res.data[0]), 201
+    except Exception as e:
+        return jsonify({"error": f"An unknown error occurred: {str(e)}"}), 500
+
+@app.route("/api/admin/coupons/<coupon_id>", methods=["DELETE"])
+def admin_delete_coupon(coupon_id):
+    user = get_user_from_token(request)
+    if not user or not is_admin(user.id):
+        return jsonify({"error": "Forbidden"}), 403
+
+    try:
+        supabase_admin.table("coupons").delete().eq("id", coupon_id).execute()
+        return jsonify({"message": "Coupon deleted"}), 200
+    except Exception as e:
+        return jsonify({"error": f"An unknown error occurred: {str(e)}"}), 500
+
+
+@app.route("/reset-password")
+def reset_password_page():
+    return render_template("reset_password.html")
+
+if __name__ == "__main__":
+    app.run(debug=True, port=5000)
+

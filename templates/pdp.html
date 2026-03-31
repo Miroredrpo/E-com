@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+
+{% block title %}{{ product.title }} — Store Name{% endblock %}
+
+{% block head %}
+<meta name="description" content="{{ product.description[:160] if product.description else 'Shop ' + product.title + ' at Store Name.' }}">
+{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="pdp-layout">
+        <!-- Left: Sticky Image -->
+        <div class="pdp-image-col">
+            <div class="pdp-image">
+                <img
+                    id="pdp-product-image"
+                    src="{{ product.image_url or url_for('static', filename='fallback.svg') }}"
+                    alt="{{ product.title }}"
+                    onerror="this.onerror=null; this.src='{{ url_for('static', filename='fallback.svg') }}';"
+                >
+            </div>
+            {% if product.images and product.images|length > 0 %}
+            <div class="pdp-thumbnails" style="display: flex; gap: 10px; margin-top: 15px; overflow-x: auto;">
+                <img src="{{ product.image_url }}" 
+                     onclick="document.getElementById('pdp-product-image').src=this.src"
+                     style="width: 80px; height: 80px; object-fit: cover; cursor: pointer; border: 1px solid var(--border); border-radius: 4px;">
+                {% for img in product.images %}
+                <img src="{{ img }}" 
+                     onerror="this.onerror=null; this.parentElement.removeChild(this);"
+                     onclick="document.getElementById('pdp-product-image').src=this.src"
+                     style="width: 80px; height: 80px; object-fit: cover; cursor: pointer; border: 1px solid var(--border); border-radius: 4px;">
+                {% endfor %}
+            </div>
+            {% endif %}
+        </div>
+
+        <!-- Right: Details -->
+        <div class="pdp-details">
+            <nav class="pdp-breadcrumb">
+                <a href="/">Home</a>
+                <span class="separator">/</span>
+                <span>{{ product.title }}</span>
+            </nav>
+
+            <h1 class="pdp-title">{{ product.title }}</h1>
+            <div class="pdp-price">Rs. {{ "%.2f"|format(product.price|float) }}</div>
+
+            {% if product.stock is not none %}
+            <div class="pdp-stock">
+                {% if product.stock > 10 %}
+                    <span class="dot in-stock"></span>
+                    <span>In Stock</span>
+                {% elif product.stock > 0 %}
+                    <span class="dot low-stock"></span>
+                    <span>Only {{ product.stock }} left</span>
+                {% else %}
+                    <span class="dot out-of-stock"></span>
+                    <span>Out of Stock</span>
+                {% endif %}
+            </div>
+            {% endif %}
+
+            {% if product.description %}
+            <p class="pdp-description">{{ product.description }}</p>
+            {% endif %}
+
+            {% if product.sizes and product.sizes|length > 0 %}
+            <div class="pdp-sizes" style="margin: 20px 0;">
+                <label style="display:block;margin-bottom:8px;font-weight:600;">Size:</label>
+                <div style="display:flex; gap:10px;">
+                    {% for size in product.sizes %}
+                    <button type="button" class="btn btn-outline size-btn" onclick="selectSize(this, '{{ size }}')" style="min-width: 44px;">{{ size }}</button>
+                    {% endfor %}
+                </div>
+                <input type="hidden" id="selected-size" value="">
+            </div>
+            <script>
+                function selectSize(btn, size) {
+                    document.querySelectorAll('.size-btn').forEach(b => {
+                        b.style.backgroundColor = 'transparent';
+                        b.style.color = 'var(--text-main)';
+                    });
+                    btn.style.backgroundColor = 'var(--primary)';
+                    btn.style.color = 'white';
+                    document.getElementById('selected-size').value = size;
+                }
+            </script>
+            {% endif %}
+
+            {% if product.stock and product.stock > 0 %}
+            <div class="quantity-selector" id="qty-selector">
+                <button onclick="changeQty(-1)" aria-label="Decrease quantity">−</button>
+                <span class="qty-value" id="pdp-qty">1</span>
+                <button onclick="changeQty(1)" aria-label="Increase quantity">+</button>
+            </div>
+
+            <button
+                id="pdp-add-to-cart"
+                class="btn btn-primary pdp-add-to-cart"
+                onclick="handlePDPAddToCart('{{ product.id }}')"
+            >
+                Add to Cart
+            </button>
+            <script>
+                function handlePDPAddToCart(pid) {
+                    const sizeInput = document.getElementById('selected-size');
+                    const size = sizeInput ? sizeInput.value : null;
+                    if (sizeInput && !size) {
+                        alert("Please select a size before adding to cart.");
+                        return;
+                    }
+                    addToCart(pid, size);
+                }
+            </script>
+            {% else %}
+            <button class="btn btn-secondary pdp-add-to-cart" disabled>
+                Out of Stock
+            </button>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const productId = "{{ product.id }}";
+    let pdpQty = 1;
+
+    function changeQty(delta) {
+        const maxStock = {{ product.stock or 1 }};
+        pdpQty = Math.max(1, Math.min(maxStock, pdpQty + delta));
+        document.getElementById('pdp-qty').textContent = pdpQty;
+    }
+</script>
+{% endblock %}

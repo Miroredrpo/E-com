@@ -1,0 +1,173 @@
+{% extends 'base.html' %}
+
+{% block title %}My Orders - Clothing Co.{% endblock %}
+
+{% block content %}
+<div class="orders-container" style="max-width: 800px; margin: 0 auto; padding: var(--space-4);">
+    <h2 style="margin-bottom: var(--space-4);">My Orders</h2>
+    <div id="orders-list">
+        <p>Loading orders...</p>
+    </div>
+</div>
+
+<style>
+.order-card {
+    background: var(--surface-1);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    margin-bottom: var(--space-4);
+    padding: var(--space-4);
+}
+.order-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: var(--space-3);
+    margin-bottom: var(--space-3);
+}
+.order-status {
+    padding: var(--space-1) var(--space-2);
+    border-radius: var(--radius-sm);
+    font-size: var(--font-size-sm);
+    font-weight: 600;
+    text-transform: uppercase;
+}
+.status-pending { background: #fff3cd; color: #856404; }
+.status-packed { background: #d1ecf1; color: #856404; }
+.status-shipped { background: #cce5ff; color: #004085; }
+.status-delivered { background: #d4edda; color: #155724; }
+.status-cancelled { background: #f8d7da; color: #721c24; }
+
+.order-item {
+    display: flex;
+    margin-bottom: var(--space-3);
+    align-items: center;
+}
+.order-item-img {
+    width: 60px;
+    height: 60px;
+    object-fit: cover;
+    border-radius: var(--radius-sm);
+    margin-right: var(--space-3);
+}
+.cancel-btn {
+    background: var(--error);
+    color: white;
+    border: none;
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-size: var(--font-size-sm);
+}
+.cancel-btn:hover {
+    background: #c82333;
+}
+</style>
+
+<script>
+document.addEventListener('DOMContentLoaded', loadMyOrders);
+
+async function loadMyOrders() {
+    const list = document.getElementById('orders-list');
+    try {
+        const { data: { session } } = await window.supabaseClient.auth.getSession();
+        if (!session) {
+            window.location.href = '/login';
+            return;
+        }
+
+        const res = await fetch('/api/orders', {
+            headers: {
+                'Authorization': `Bearer ${session.access_token}`
+            }
+        });
+
+        if (!res.ok) throw new Error('Failed to load orders');
+        const orders = await res.json();
+
+        if (orders.length === 0) {
+            list.innerHTML = '<p>You have no orders yet.</p><a href="/" class="btn btn-primary" style="display:inline-block;margin-top:10px;">Start Shopping</a>';
+            return;
+        }
+
+        list.innerHTML = orders.map(o => `
+            <div class="order-card">
+                <div class="order-header">
+                    <div>
+                        <strong>Order #${o.order_number || o.id.substring(0, 4)}</strong><br>
+                        <small style="color:var(--text-muted)">${new Date(o.created_at).toLocaleDateString()}</small>
+                    </div>
+                    <div style="text-align: right;">
+                        <div class="order-status status-${o.status}">${o.status}</div>
+                        <div style="margin-top: 5px; font-weight: bold;">Rs. ${parseFloat(o.total_amount).toFixed(2)}</div>
+                    </div>
+                </div>
+                
+                <div class="order-items">
+                    ${o.order_items.map(item => `
+                        <div class="order-item">
+                            <img src="${item.products ? item.products.image_url : ''}" alt="Product" class="order-item-img" onerror="this.src='/static/placeholder.png'">
+                            <div style="flex-grow: 1;">
+                                <div style="font-weight: 500;">${item.products ? item.products.title : 'Product'}</div>
+                                <div style="font-size: var(--font-size-sm); color: var(--text-muted);">
+                                    Qty: ${item.quantity} ${item.size ? `| Size: ${item.size}` : ''}
+                                </div>
+                            </div>
+                            <div style="font-weight: 500;">
+                                Rs. ${parseFloat(item.price_at_time).toFixed(2)}
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>
+
+                ${o.status === 'pending' ? `
+                    <div style="margin-top: var(--space-3); padding: var(--space-3); background: var(--bg-primary); border-radius: var(--radius-sm); border: 1px dashed var(--border-color); font-size: var(--font-size-sm);">
+                        To cancel this order or modify it, please message us on <a href="https://instagram.com/your_instagram_page" target="_blank" style="color:var(--accent); font-weight: 500; text-decoration: underline;">Instagram</a> with your Order Number: <strong>${o.order_number || o.id.substring(0, 4)}</strong>
+                    </div>
+                ` : ''}
+                
+                <div style="margin-top: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--border-color); font-size: var(--font-size-sm); color: var(--text-muted);">
+                    <strong>Shipping To:</strong> ${escapeHtml(o.shipping_address)}
+                </div>
+            </div>
+        `).join('');
+
+    } catch (err) {
+        list.innerHTML = `<p style="color:var(--error)">Error loading orders: ${err.message}</p>`;
+    }
+}
+
+async function cancelOrder(orderId) {
+    if (!confirm("Are you sure you want to cancel this order? This action cannot be undone.")) return;
+    
+    try {
+        const { data: { session } } = await window.supabaseClient.auth.getSession();
+        const token = session ? session.access_token : '';
+        const res = await fetch(`/api/orders/${orderId}/cancel`, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${token}`
+            }
+        });
+        
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to cancel order');
+        
+        showToast("Order cancelled successfully", "success");
+        loadMyOrders();
+    } catch (err) {
+        showToast(err.message, "error");
+    }
+}
+
+function escapeHtml(unsafe) {
+    return (unsafe || '').toString()
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+}
+</script>
+{% endblock %}

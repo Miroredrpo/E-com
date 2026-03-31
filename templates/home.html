@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+
+{% block title %}Store Name — Premium Nepali Clothing{% endblock %}
+
+{% block content %}
+<!-- Hero Section -->
+<section class="hero">
+    <div class="container">
+        <h1>Discover Authentic Nepali Craftsmanship</h1>
+        <p>Handwoven textiles and contemporary designs, delivered to your door. Cash on Delivery available.</p>
+    </div>
+</section>
+
+<!-- Products Section -->
+<section class="container" style="padding-top: var(--space-4); padding-bottom: var(--space-8);">
+    <div class="section-header">
+        <h2>Our Collection</h2>
+    </div>
+
+    <div id="product-grid" class="product-grid">
+        <!-- Skeleton loaders shown while products load -->
+        <div class="skeleton-card">
+            <div class="skeleton-image"></div>
+            <div class="skeleton-text medium" style="margin-top:12px;"></div>
+            <div class="skeleton-text short"></div>
+            <div class="skeleton-btn"></div>
+        </div>
+        <div class="skeleton-card">
+            <div class="skeleton-image"></div>
+            <div class="skeleton-text medium" style="margin-top:12px;"></div>
+            <div class="skeleton-text short"></div>
+            <div class="skeleton-btn"></div>
+        </div>
+        <div class="skeleton-card">
+            <div class="skeleton-image"></div>
+            <div class="skeleton-text medium" style="margin-top:12px;"></div>
+            <div class="skeleton-text short"></div>
+            <div class="skeleton-btn"></div>
+        </div>
+        <div class="skeleton-card">
+            <div class="skeleton-image"></div>
+            <div class="skeleton-text medium" style="margin-top:12px;"></div>
+            <div class="skeleton-text short"></div>
+            <div class="skeleton-btn"></div>
+        </div>
+    </div>
+</section>
+{% endblock %}

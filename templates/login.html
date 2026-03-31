@@ -1,0 +1,169 @@
+{% extends "base.html" %}
+
+{% block title %}Log in / Sign up - Store Name{% endblock %}
+
+{% block content %}
+<style>
+    .auth-container {
+        max-width: 400px;
+        margin: 4rem auto;
+        padding: 2rem;
+        background: #fff;
+        border-radius: 8px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    }
+    .auth-header {
+        margin-bottom: 1.5rem;
+        text-align: center;
+    }
+    .auth-header h2 {
+        font-family: 'Playfair Display', serif;
+        margin-bottom: 0.5rem;
+    }
+    .form-toggle, .forgot-password-link {
+        text-align: center;
+        margin-top: 1rem;
+        font-size: 0.9rem;
+    }
+    .form-group {
+        margin-bottom: 1rem;
+    }
+    .form-group label {
+        display: block;
+        margin-bottom: 0.4rem;
+        font-weight: 500;
+    }
+    .form-group input {
+        width: 100%;
+        padding: 0.75rem;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+    }
+    .form-error {
+        color: #d32f2f;
+        margin-bottom: 1rem;
+        text-align: center;
+    }
+</style>
+
+<div class="auth-container">
+    <div class="auth-header">
+        <h2 id="auth-title">Log in</h2>
+    </div>
+
+    <form id="auth-form" onsubmit="handleAuth(event)">
+        <div id="fullname-group" class="form-group" style="display:none;">
+            <label for="auth-fullname">Full Name</label>
+            <input type="text" id="auth-fullname" placeholder="Your name">
+        </div>
+        <div class="form-group">
+            <label for="auth-email">Email</label>
+            <input type="email" id="auth-email" placeholder="you@example.com" required>
+        </div>
+        <div class="form-group">
+            <label for="auth-password">Password</label>
+            <input type="password" id="auth-password" placeholder="••••••••" required>
+        </div>
+        <p id="auth-error" class="form-error" style="display:none;"></p>
+        
+        <button type="submit" id="auth-submit-btn" class="btn btn-primary btn-lg" style="width:100%;margin-top:8px;">
+            Log in
+        </button>
+    </form>
+
+    <div class="forgot-password-link" id="forgot-password-container">
+        <a href="/forgot-password">Forgot password?</a>
+    </div>
+
+    <div class="form-toggle">
+        <a href="#" id="auth-toggle-link" onclick="event.preventDefault(); toggleAuthMode();">
+            Need an account? Sign up
+        </a>
+    </div>
+</div>
+
+<script>
+    let isLoginMode = true;
+    const sb = window.supabaseClient;
+
+    document.addEventListener('DOMContentLoaded', async () => {
+        // Redirect home if already logged in
+        const { data: { session } } = await sb.auth.getSession();
+        if (session) {
+            window.location.href = '/';
+        }
+    });
+
+    window.toggleAuthMode = function () {
+        isLoginMode = !isLoginMode;
+        document.getElementById('auth-title').textContent = isLoginMode ? 'Log in' : 'Sign up';
+        document.getElementById('auth-submit-btn').textContent = isLoginMode ? 'Log in' : 'Create account';
+        document.getElementById('auth-toggle-link').textContent = isLoginMode ? 'Need an account? Sign up' : 'Already have an account? Log in';
+        document.getElementById('fullname-group').style.display = isLoginMode ? 'none' : 'block';
+        document.getElementById('forgot-password-container').style.display = isLoginMode ? 'block' : 'none';
+        hideAuthError();
+    };
+
+    window.handleAuth = async function (e) {
+        e.preventDefault();
+        hideAuthError();
+
+        const email = document.getElementById('auth-email').value.trim();
+        const password = document.getElementById('auth-password').value;
+        const btn = document.getElementById('auth-submit-btn');
+        const originalText = btn.textContent;
+
+        btn.textContent = 'Processing...';
+        btn.disabled = true;
+
+        try {
+            if (isLoginMode) {
+                const { error } = await sb.auth.signInWithPassword({ email, password });
+                if (error) throw error;
+            } else {
+                const fullName = document.getElementById('auth-fullname').value.trim();
+                const { data, error } = await sb.auth.signUp({
+                    email,
+                    password,
+                    options: { data: { full_name: fullName } }
+                });
+                if (error) throw error;
+                if (data?.user && data?.session === null) {
+                    toggleAuthMode();
+                    if (typeof showToast === 'function') {
+                        showToast('Account created! Check your email to verify.', 'success');
+                    } else {
+                        alert('Account created! Check your email to verify.');
+                    }
+                    return;
+                }
+                
+                // If the user is automatically put into a session without email confirmation
+                toggleAuthMode();
+                if (typeof showToast === 'function') {
+                    showToast('Account created successfully! Please log in.', 'success');
+                } else {
+                    alert('Account created successfully! Please log in.');
+                }
+                return;
+            }
+            // For login
+            window.location.href = '/';
+        } catch (error) {
+            showAuthError(error.message);
+            btn.textContent = originalText;
+            btn.disabled = false;
+        }
+    };
+
+    function showAuthError(msg) {
+        const el = document.getElementById('auth-error');
+        if (el) { el.textContent = msg; el.style.display = 'block'; }
+    }
+
+    function hideAuthError() {
+        const el = document.getElementById('auth-error');
+        if (el) { el.textContent = ''; el.style.display = 'none'; }
+    }
+</script>
+{% endblock %}
