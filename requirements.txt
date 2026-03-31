@@ -16,8 +16,8 @@ h2==4.3.0
 hpack==4.1.0
 httpcore==1.0.9
 httpx>=0.26.0
-gotrue==2.9.1
-supafunc==0.3.3
+gotrue>=2.9.1
+supafunc>=0.4.2
 hyperframe==6.1.0
 idna==3.11
 itsdangerous==2.2.0
